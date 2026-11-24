@@ -300,4 +300,174 @@ static noinline void do_useless_alloc(size_t sz)
 	memset_explicit(stack, s[1], n);
 }
 
+struct ksu_hide_span {
+	size_t start;
+	size_t end;
+};
+
+static __always_inline bool ksu_hide_type_span(const char *str, size_t limit,
+						struct ksu_hide_span *span)
+{
+	const char *first, *second, *third;
+	size_t start, remaining;
+
+	if (!str || !span)
+		return false;
+
+	limit = strnlen(str, limit);
+	first = __builtin_memchr(str, ':', limit);
+	if (!first || first == str)
+		return false;
+
+	remaining = limit - (first - str + 1);
+	second = __builtin_memchr(first + 1, ':', remaining);
+	if (!second || second == first + 1)
+		return false;
+
+	start = second - str + 1;
+	if (start >= limit)
+		return false;
+
+	third = __builtin_memchr(str + start, ':', limit - start);
+	span->start = start;
+	span->end = third ? (size_t)(third - str) : limit;
+	return span->end > start;
+}
+
+static __always_inline bool ksu_hide_span_matches(const char *entry, const char *str,
+						   const struct ksu_hide_span *span)
+{
+	size_t entry_len = strlen(entry);
+	size_t type_len = span->end - span->start;
+
+	return entry_len == type_len + 2 && entry[0] == ':' &&
+		entry[type_len + 1] == ':' &&
+		!memcmp(entry + 1, str + span->start, type_len);
+}
+
+static __always_inline bool ksu_hide_type_in_list(struct ksu_hide_buf *type_buf,
+						   const char *str,
+						   const struct ksu_hide_span *span)
+{
+	size_t offset = 0;
+	bool found = false;
+
+	if (!type_buf)
+		return false;
+
+	while (offset < type_buf->len) {
+		const char *entry = type_buf->data + offset;
+
+		found |= ksu_hide_span_matches(entry, str, span);
+		offset += strlen(entry) + 1;
+	}
+	return found;
+}
+
+static __always_inline bool ksu_hide_sanitize_context(char *str, size_t limit)
+{
+	struct ksu_hide_span span;
+	bool found;
+
+	if (!ksu_hide_type_span(str, limit, &span))
+		return false;
+
+	{
+		struct ksu_hide_buf *type_buf __cleanup(ksu_selinux_hide_put_buf) =
+			ksu_selinux_hide_get_buf(&ksu_hide_type_list);
+		found = ksu_hide_type_in_list(type_buf, str, &span);
+	}
+
+	if (found)
+		str[span.start] = '!';
+	return found;
+}
+
+static __always_inline bool ksu_hide_space(char c)
+{
+	return c == ' ' || c == '\t' || c == '\n' || c == '\r' || c == '\v' || c == '\f';
+}
+
+static __always_inline bool ksu_hide_next_token(const char *str, size_t limit,
+						 size_t *offset, struct ksu_hide_span *token)
+{
+	size_t pos = *offset;
+
+	while (pos < limit && ksu_hide_space(str[pos]))
+		pos++;
+	if (pos == limit)
+		return false;
+
+	token->start = pos;
+	while (pos < limit && !ksu_hide_space(str[pos]))
+		pos++;
+	token->end = pos;
+	*offset = pos;
+	return true;
+}
+
+static __always_inline bool ksu_hide_access_class_valid(const char *str,
+							 const struct ksu_hide_span *token)
+{
+	size_t pos = token->start;
+
+	if (pos < token->end && (str[pos] == '+' || str[pos] == '-'))
+		pos++;
+	return pos < token->end && str[pos] >= '0' && str[pos] <= '9';
+}
+
+static __always_inline bool ksu_hide_sanitize_access(char *str, size_t limit)
+{
+	struct ksu_hide_span source, target, class, source_type, target_type;
+	size_t offset = 0;
+	bool source_hidden, target_hidden, rule_hidden = false;
+
+	if (!str)
+		return false;
+	limit = strnlen(str, limit);
+	if (!ksu_hide_next_token(str, limit, &offset, &source) ||
+	    !ksu_hide_next_token(str, limit, &offset, &target) ||
+	    !ksu_hide_next_token(str, limit, &offset, &class) ||
+	    !ksu_hide_access_class_valid(str, &class))
+		return false;
+
+	if (!ksu_hide_type_span(str + source.start, source.end - source.start, &source_type) ||
+	    !ksu_hide_type_span(str + target.start, target.end - target.start, &target_type))
+		return false;
+
+	source_type.start += source.start;
+	source_type.end += source.start;
+	target_type.start += target.start;
+	target_type.end += target.start;
+
+	{
+		struct ksu_hide_buf *type_buf __cleanup(ksu_selinux_hide_put_buf) =
+			ksu_selinux_hide_get_buf(&ksu_hide_type_list);
+		source_hidden = ksu_hide_type_in_list(type_buf, str, &source_type);
+		target_hidden = ksu_hide_type_in_list(type_buf, str, &target_type);
+	}
+
+	{
+		struct ksu_hide_buf *rule_buf __cleanup(ksu_selinux_hide_put_buf) =
+			ksu_selinux_hide_get_buf(&ksu_hide_rule_list);
+		size_t rule_offset = 0;
+
+		while (rule_buf && rule_offset < rule_buf->len) {
+			const char *src_rule = rule_buf->data + rule_offset;
+			const char *tgt_rule = src_rule + strlen(src_rule) + 1;
+
+			/* Keep the work independent of which side matches. */
+			rule_hidden |= (unsigned)ksu_hide_span_matches(src_rule, str, &source_type) &
+				(unsigned)ksu_hide_span_matches(tgt_rule, str, &target_type);
+			rule_offset = tgt_rule - rule_buf->data + strlen(tgt_rule) + 1;
+		}
+	}
+
+	if (source_hidden)
+		str[source_type.start] = '!';
+	if (target_hidden || rule_hidden)
+		str[target_type.start] = '!';
+	return source_hidden || target_hidden || rule_hidden;
+}
+
 #endif
