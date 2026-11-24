@@ -94,29 +94,13 @@ static char *sh_simple_transaction_get(struct file *file, const char __user *buf
 
 	char *data = simple_transaction_get(file, buf, size);
 	if (IS_ERR(data))
-		return PTR_ERR(data);
+		return data;
 
-	if (ino == SEL_CONTEXT && ksu_should_destroy_context(data, size, true)) {
-		pr_info_ratelimited("selinux_hide: simple_transaction_get: context: destroy: %s \n", data);
-		do_useless_alloc(size);
-		do_useless_alloc(size);
-		do_useless_alloc(size);
-		return ERR_PTR(-EINVAL);
+	if (ino == SEL_CONTEXT)
+		ksu_hide_sanitize_context(data, size);
+	else if (ino == SEL_ACCESS)
+		ksu_hide_sanitize_access(data, size);
 
-//		replace_after_second_colon(data, size);
-//		do_useless_alloc(size);
-	}
-
-	if (ino == SEL_ACCESS && ksu_should_destroy_context(data, size, false)) {
-		pr_info("selinux_hide: simple_transaction_get: access: destroy: %s \n", data);
-		do_useless_alloc(size);
-		do_useless_alloc(size);
-		do_useless_alloc(size);
-		return ERR_PTR(-EINVAL);
-
-//		replace_after_second_colon(data, size);
-//		do_useless_alloc(size);
-	}
 	return data;
 
 skip_destroy:;
@@ -260,85 +244,57 @@ hook_classic:
 }
 
 static void *security_context_to_sid_core_fn __read_mostly = nullptr;
-static __always_inline int should_ret_einval(const char *scontext, u32 scontext_len)
+static __always_inline void sh_hide_context(const char *scontext, u32 scontext_len)
 {
 	if (unlikely(!ksu_selinux_hide_enabled))
-		return 0;
+		return;
 
 	if (!ksu_is_seccomp_enabled())
-		return 0;
+		return;
 
 	if (current_uid().val < 10000)
-		return 0;
+		return;
 
-	if (!ksu_should_destroy_context(scontext, scontext_len, true))
-		return 0;
-
-	pr_info_ratelimited("selinux_hide: security_context_to_sid: destroy: %.*s\n", scontext_len, scontext);
-//	replace_after_second_colon(data, size);
-	do_useless_alloc(scontext_len);
-	do_useless_alloc(scontext_len);
-	do_useless_alloc(scontext_len);
-	return -EINVAL;
+	ksu_hide_sanitize_context((char *)scontext, scontext_len);
 }
 
 
 #if LINUX_VERSION_CODE < KERNEL_VERSION(6, 4, 0) && defined(KSU_COMPAT_HAS_SELINUX_STATE)
 static __nocfi int sh_security_context_to_sid_core(struct selinux_state *state, const char *scontext, u32 scontext_len, u32 *sid, u32 def_sid, gfp_t gfp_flags, int force)
 {
-	int fret = should_ret_einval(scontext, scontext_len);
-	if (fret)
-		return fret;
-
-	int ret = ((typeof (sh_security_context_to_sid_core) *)security_context_to_sid_core_fn)(state, scontext, scontext_len, sid, def_sid, gfp_flags, force);
-	return ret;
+	sh_hide_context(scontext, scontext_len);
+	return ((typeof (sh_security_context_to_sid_core) *)security_context_to_sid_core_fn)(state, scontext, scontext_len, sid, def_sid, gfp_flags, force);
 }
 #else
 static __nocfi int sh_security_context_to_sid_core(const char *scontext, u32 scontext_len, u32 *sid, u32 def_sid, gfp_t gfp_flags, int force)
 {
-	int fret = should_ret_einval(scontext, scontext_len);
-	if (fret)
-		return fret;
-
-	int ret = ((typeof (sh_security_context_to_sid_core) *)security_context_to_sid_core_fn)(scontext, scontext_len, sid, def_sid, gfp_flags, force);
-	return ret;
+	sh_hide_context(scontext, scontext_len);
+	return ((typeof (sh_security_context_to_sid_core) *)security_context_to_sid_core_fn)(scontext, scontext_len, sid, def_sid, gfp_flags, force);
 }
 #endif
 
 #define SECURITY_CONTEXT_TO_SID_sstate	struct selinux_state *state, const char *scontext, u32 scontext_len, u32 *sid, gfp_t gfp
 __overloaded static int sh_security_context_to_sstate(SECURITY_CONTEXT_TO_SID_sstate)
 {
-	int fret = should_ret_einval(scontext, scontext_len);
-	if (fret)
-		return fret;
-
+	sh_hide_context(scontext, scontext_len);
 	assume(!!&security_context_to_sid);
-	int ret = ((typeof(sh_security_context_to_sstate) *)(void *)security_context_to_sid)(state, scontext, scontext_len, sid, gfp);
-	return ret;
+	return ((typeof(sh_security_context_to_sstate) *)(void *)security_context_to_sid)(state, scontext, scontext_len, sid, gfp);
 }
 
 #define SECURITY_CONTEXT_TO_SID_gfp	const char *scontext, u32 scontext_len, u32 *sid, gfp_t gfp
 __overloaded static int sh_security_context_to_sid_gfp(SECURITY_CONTEXT_TO_SID_gfp)
 {
-	int fret = should_ret_einval(scontext, scontext_len);
-	if (fret)
-		return fret;
-
+	sh_hide_context(scontext, scontext_len);
 	assume(!!&security_context_to_sid);
-	int ret = ((typeof(sh_security_context_to_sid_gfp) *)(void *)security_context_to_sid)(scontext, scontext_len, sid, gfp);
-	return ret;
+	return ((typeof(sh_security_context_to_sid_gfp) *)(void *)security_context_to_sid)(scontext, scontext_len, sid, gfp);
 }
 
 #define SECURITY_CONTEXT_TO_SID_legacy	const char *scontext, u32 scontext_len, u32 *sid
 __overloaded static int sh_security_context_to_sid_legacy(SECURITY_CONTEXT_TO_SID_legacy)
 {
-	int fret = should_ret_einval(scontext, scontext_len);
-	if (fret)
-		return fret;
-
+	sh_hide_context(scontext, scontext_len);
 	assume(!!&security_context_to_sid);
-	int ret = ((typeof(sh_security_context_to_sid_legacy) *)(void *)security_context_to_sid)(scontext, scontext_len, sid);
-	return ret;
+	return ((typeof(sh_security_context_to_sid_legacy) *)(void *)security_context_to_sid)(scontext, scontext_len, sid);
 }
 
 #define sh_security_context_to_sid_overloaded _Generic(					\
