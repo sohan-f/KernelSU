@@ -67,6 +67,8 @@ static inline struct ksu_hide_buf *ksu_selinux_hide_get_buf(struct ksu_hide_buf 
 check_buf:
 	buf = __atomic_load_n(g_buf, __ATOMIC_ACQUIRE);
 	__atomic_store_n(slot, buf, __ATOMIC_RELEASE);
+	/* The pin must be globally visible before the second lookup. */
+	__atomic_thread_fence(__ATOMIC_SEQ_CST);
 
 	if (buf != __atomic_load_n(g_buf, __ATOMIC_ACQUIRE))
 		goto check_buf;
@@ -144,6 +146,7 @@ static noinline void ksu_add_shit_to_list(u32 cmd, const char *args[])
 		sprintf(w_ptr, ":%s:", name);
 
 		struct ksu_hide_buf *old_ptr = __atomic_exchange_n(&ksu_hide_type_list, new_ptr, __ATOMIC_ACQ_REL);
+		__atomic_thread_fence(__ATOMIC_SEQ_CST);
 		ksu_selinux_hide_hazptr_free(old_ptr);
 
 		pr_info("selinux_hide: tracking type: %s\n", w_ptr);
@@ -200,6 +203,7 @@ static noinline void ksu_add_shit_to_list(u32 cmd, const char *args[])
 		sprintf(w_ptr_tgt, ":%s:", tgt);
 
 		struct ksu_hide_buf *old_ptr = __atomic_exchange_n(&ksu_hide_rule_list, new_ptr, __ATOMIC_ACQ_REL);
+		__atomic_thread_fence(__ATOMIC_SEQ_CST);
 		ksu_selinux_hide_hazptr_free(old_ptr);
 
 		pr_info("selinux_hide: tracking rule: %s %s\n", w_ptr_src, w_ptr_tgt);
