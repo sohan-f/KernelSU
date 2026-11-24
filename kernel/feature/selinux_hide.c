@@ -61,12 +61,7 @@ static __always_inline int ksu_hide_setprocattr_inline(const char *name, void *v
 	if (!str || !str[0])
 		return 0;
 
-	if (!ksu_should_destroy_context(str, size, true))
-		return 0;
-	
-	pr_info_ratelimited("selinux_hide: setprocattr: destroy: %.*s\n", size, str);
-	replace_after_second_colon((char *)str, size);
-	do_useless_alloc(size);
+	ksu_hide_sanitize_context(str, size);
 	return 0;
 }
 
@@ -98,24 +93,7 @@ static __always_inline int ksu_hide_setxattr_inline(const char *name, void *valu
 	if (!str || !str[0])
 		return 0;
 
-	if (!ksu_should_destroy_context(str, size, true))
-		return 0;
-
- // this is wrong, this just fucks up ratelimit, rethink later, also better to catch in userspace
-#if LINUX_VERSION_CODE >= KERNEL_VERSION(3, 5, 0) && defined(CONFIG_AUDIT)
-	for (int i = 0; i < 16; i++) {
-		struct audit_buffer *ab = audit_log_start(audit_context(), GFP_ATOMIC, AUDIT_SELINUX_ERR);
-		if (!i) {
-			audit_log_format(ab, "op=setxattr invalid_context=");
-			audit_log_n_untrustedstring(ab, str, size);
-		} else
-			audit_log_format(ab, "");
-		audit_log_end(ab);
-	}
-#endif
-	// destroy
-	pr_info_ratelimited("selinux_hide: inode_setxattr: destroy: %.*s\n", size, str);
-	replace_after_second_colon((char *)str, size);
+	ksu_hide_sanitize_context(str, size);
 	return 0;
 }
 
@@ -146,12 +124,10 @@ static __nocfi ssize_t ksu_selinux_transaction_write(struct file *file, const ch
 		goto skip_destroy;
 
 	kbuf[len] = '\0';
-	if (ksu_should_destroy_context(kbuf, len, false)) {
-		pr_info_ratelimited("selinux_hide: selinux_transaction_write: destroy: %s \n", kbuf);
-		// buf = (const char __user *)current->mm->start_stack;
-		do_useless_alloc(len);
-		return -EINVAL;
-	}
+	bool hidden = ino == SEL_CONTEXT ? ksu_hide_sanitize_context(kbuf, len) :
+		ksu_hide_sanitize_access(kbuf, len);
+	if (hidden && size < SIMPLE_TRANSACTION_LIMIT)
+		return selinux_transaction_write_fn(file, buf, 0, pos);
 
 	ssize_t ret = selinux_transaction_write_fn(file, buf, size, pos);
 	if (!(ret > 0))
