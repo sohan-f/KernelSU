@@ -4,6 +4,11 @@ on:
     tags:
       - "v*"
   workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to publish (for example v3.3.1). Leave empty to only build artifacts."
+        required: false
+        type: string
 
 jobs:
   build-manager:
@@ -12,7 +17,12 @@ jobs:
   release:
     needs:
       - build-manager
+    # A release needs a tag. Tag pushes provide one via github.ref_name;
+    # manual runs must supply it explicitly or they only build artifacts.
+    if: github.ref_type == 'tag' || inputs.tag != ''
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Download artifacts
         uses: actions/download-artifact@v8
@@ -64,6 +74,7 @@ jobs:
       - name: release
         uses: softprops/action-gh-release@v3
         with:
+          tag_name: ${{ inputs.tag || github.ref_name }}
           files: |
             manager/*.apk
             lkm/lkm-*_kernelsu.ko
